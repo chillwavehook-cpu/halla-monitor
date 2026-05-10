@@ -8,6 +8,9 @@
 <meta name="apple-mobile-web-app-title" content="HallaMonitor"/>
 <title>Halla Member Monitor</title>
 <link rel="manifest" href="manifest.json"/>
+<!-- Firebase -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;background:#050a14;color:#e2e8f0;font-family:'Segoe UI',sans-serif;overscroll-behavior:none}
@@ -243,15 +246,7 @@ tr:hover{background:#0a1628!important}
 // Right now data is stored per-device in localStorage.
 // To use Firebase: set FIREBASE_CONFIG below and uncomment the Firebase section.
 
-const firebaseConfig = {
-  apiKey: "AIzaSyAQYsMTZAAfPUtPm1G-wP3jiyzq15WByVU",
-  authDomain: "halla-monitor.firebaseapp.com",
-  projectId: "halla-monitor",
-  storageBucket: "halla-monitor.firebasestorage.app",
-  messagingSenderId: "692344520149",
-  appId: "1:692344520149:web:057394c73b24c76de6115c",
-  measurementId: "G-H86H9LXQ6C"
-}; ; // Set to your config object to enable Firebase sync
+const FIREBASE_CONFIG = null; // Set to your config object to enable Firebase sync
 // const FIREBASE_CONFIG = { apiKey:"...", authDomain:"...", projectId:"...", ... };
 
 const ADMIN_KEY   = "halla_admin_v2";
@@ -353,12 +348,44 @@ function chipHTML(name,ts,compact){
   return`<span class="chip" title="${esc(title)}" style="color:${c};background:${c}1a;border:1px solid ${c}44"><span style="width:5px;height:5px;border-radius:50%;background:${c};display:inline-block;flex-shrink:0"></span>${esc(name)}</span>`;
 }
 
-// ── Storage Persistence ────────────────────────────────────────────
-function persist(){
-  setLocal(RECORDS_KEY, {records:allData, members:members, updatedAt:nowISO()});
-  setSyncStatus("saved");
+// ── Firebase init ──────────────────────────────────────────────────
+let db = null;
+function initFirebase(){
+  if(!FIREBASE_CONFIG) return false;
+  try{
+    if(!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
+    db = firebase.firestore();
+    return true;
+  }catch(e){ console.error("Firebase init error:",e); return false; }
 }
+
+// ── Storage Persistence ────────────────────────────────────────────
+async function persist(){
+  setSyncStatus("saving");
+  const payload = {records:allData, members:members, updatedAt:nowISO()};
+  // Always save locally as backup
+  setLocal(RECORDS_KEY, payload);
+  // Save to Firebase if available
+  if(db){
+    try{
+      await db.collection("halla").doc("records").set(payload);
+      setSyncStatus("saved");
+    }catch(e){ console.error("Firebase save error:",e); setSyncStatus("error"); }
+  } else {
+    setSyncStatus("saved");
+  }
+}
+
+async function persistAdmins(){
+  const payload = {list:adminList};
+  setLocal(ADMINS_KEY, payload);
+  if(db){
+    try{ await db.collection("halla").doc("admins").set(payload); }catch(e){ console.error(e); }
+  }
+}
+
 function loadData(){
+  // Load from localStorage first (instant, works offline)
   const saved=getLocal(RECORDS_KEY);
   if(saved){
     if(saved.records) allData=saved.records;
@@ -367,11 +394,38 @@ function loadData(){
   const savedAdmins=getLocal(ADMINS_KEY);
   if(savedAdmins?.list) adminList=savedAdmins.list;
 }
+
+function startFirebaseSync(){
+  if(!db) return;
+  // Real-time listener for records — updates all admins instantly
+  db.collection("halla").doc("records").onSnapshot(snap=>{
+    if(snap.exists){
+      const data=snap.data();
+      if(data.records){ allData=data.records; setLocal(RECORDS_KEY,data); }
+      if(data.members){ members=data.members; }
+      renderCurrentTab();
+      renderStatsBar();
+      setSyncStatus("saved");
+    }
+  }, err=>{ console.error("Firestore listen error:",err); });
+
+  // Real-time listener for admins
+  db.collection("halla").doc("admins").onSnapshot(snap=>{
+    if(snap.exists){
+      const data=snap.data();
+      if(data.list){ adminList=data.list; setLocal(ADMINS_KEY,data); }
+      if(currentTab==="admins") renderAdmins();
+      renderStatsBar();
+    }
+  }, err=>{ console.error("Firestore admins listen error:",err); });
+}
+
 function setSyncStatus(s){
   const el=document.getElementById("sync-status");
   if(!el)return;
-  if(s==="saved"){ el.style.background="#052e16";el.style.color="#4ade80";el.style.borderColor="#16a34a";el.textContent="✓ Saved"; }
+  if(s==="saved"){   el.style.background="#052e16";el.style.color="#4ade80";el.style.borderColor="#16a34a";el.textContent="✓ Synced"; }
   else if(s==="saving"){ el.style.background="#0c1a40";el.style.color="#60a5fa";el.style.borderColor="#3b82f6";el.textContent="⟳ Saving…"; }
+  else if(s==="error"){  el.style.background="#1f0a0a";el.style.color="#f87171";el.style.borderColor="#dc2626";el.textContent="✗ Error"; }
 }
 
 // ── Day record helpers ─────────────────────────────────────────────
@@ -433,7 +487,7 @@ function loginConfirm(){
   // Register in admin list
   if(!adminList.find(a=>a.name===name)){
     adminList.push({name,hallaId,role:selectedRole,country,since:admin.since});
-    setLocal(ADMINS_KEY,{list:adminList});
+    persistAdmins();
   }
   showApp();
 }
@@ -916,7 +970,13 @@ function closeModal(id){ document.getElementById(id).classList.remove("open"); }
 
 // ── Boot ───────────────────────────────────────────────────────────
 window.addEventListener("DOMContentLoaded",()=>{
+  // Init Firebase
+  const fbOk = initFirebase();
+
+  // Load local data first (instant)
   loadData();
+
+  // Show login or app
   const savedAdmin=getLocal(ADMIN_KEY);
   if(savedAdmin && savedAdmin.name){
     admin=savedAdmin;
@@ -925,6 +985,16 @@ window.addEventListener("DOMContentLoaded",()=>{
   } else {
     document.getElementById("loading").style.display="none";
     document.getElementById("screen-login").classList.add("active");
+  }
+
+  // Start Firebase real-time sync AFTER showing the app
+  // This will update the UI automatically when any admin makes a change
+  if(fbOk){
+    startFirebaseSync();
+    console.log("✅ Firebase real-time sync active");
+  } else {
+    console.warn("⚠️ Firebase not configured — using localStorage only");
+    setSyncStatus("saved");
   }
 });
 </script>
