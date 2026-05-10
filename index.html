@@ -243,7 +243,15 @@ tr:hover{background:#0a1628!important}
 // Right now data is stored per-device in localStorage.
 // To use Firebase: set FIREBASE_CONFIG below and uncomment the Firebase section.
 
-const FIREBASE_CONFIG = null; // Set to your config object to enable Firebase sync
+const FIREBASE_CONFIG =const firebaseConfig = {
+  apiKey: "AIzaSyAQYsMTZAAfPUtPm1G-wP3jiyzq15WByVU",
+  authDomain: "halla-monitor.firebaseapp.com",
+  projectId: "halla-monitor",
+  storageBucket: "halla-monitor.firebasestorage.app",
+  messagingSenderId: "692344520149",
+  appId: "1:692344520149:web:057394c73b24c76de6115c",
+  measurementId: "G-H86H9LXQ6C"
+}; ; // Set to your config object to enable Firebase sync
 // const FIREBASE_CONFIG = { apiKey:"...", authDomain:"...", projectId:"...", ... };
 
 const ADMIN_KEY   = "halla_admin_v2";
